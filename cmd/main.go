@@ -3,59 +3,76 @@ package main
 import (
 	"context"
 	"fmt"
-	"golang_crud/config"
-	"golang_crud/internal/app/handlers"
-	"golang_crud/internal/pkg/health/service"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/mobintmu/golang_crud/internal/repositories"
+	"github.com/mobintmu/golang_crud/internal/routes"
+	"github.com/mobintmu/golang_crud/internal/server"
+	"github.com/mobintmu/golang_crud/internal/services"
+	"go.uber.org/fx"
 )
 
 func main() {
-	// Load configuration
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		log.Fatal("failed to load config:", err)
+	// Create a base context for the application
+	ctx := context.Background()
+
+	app := fx.New(
+		fx.Provide(
+			func() (*server.Config, error) {
+				return server.LoadConfig("")
+			},
+			routes.SetupRouter,
+			services.NewUserService,
+			repositories.NewUserRepository,
+			server.NewServer,
+		),
+		fx.Invoke(func(
+			lc fx.Lifecycle,
+			router *gin.Engine,
+			server *server.Server,
+		) error {
+			return server.StartServer(lc, router)
+		}),
+	)
+
+	// Start the application
+	if err := app.Start(ctx); err != nil {
+		log.Printf("Failed to start application: %v", err)
+		fmt.Fprintf(os.Stderr, "Error starting application: %v\n", err)
+		os.Exit(1)
 	}
 
-	// Initialize health service
-	healthService := service.NewHealthService()
-	handler := handlers.NewHealthHandler(healthService)
+	// Log successful startup
+	log.Println("Application is running...")
 
-	// Create HTTP server
-	mux := http.NewServeMux()
-	handler.SetupRoutes(mux)
-
-	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%s", cfg.Server.Port),
-		Handler:      mux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
-
-	// Start server in a separate goroutine
+	// Set up signal handling
 	go func() {
-		log.Printf("health check server starting on port %s", cfg.Server.Port)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal("failed to start server:", err)
+		// Create a channel for signals
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+		// Wait for signal
+		sig := <-sigChan
+		log.Printf("Received signal %v, shutting down...", sig)
+
+		// Create a context with timeout for graceful shutdown
+		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		if err := app.Stop(shutdownCtx); err != nil {
+			log.Printf("Error stopping application: %v", err)
+			os.Exit(1)
 		}
+
+		log.Println("Application stopped successfully")
+		os.Exit(0)
 	}()
 
-	// Handle graceful shutdown
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatal("failed to shutdown server:", err)
-	}
-
-	log.Println("server shut down")
+	// Block main goroutine to keep application running
+	select {}
 }
