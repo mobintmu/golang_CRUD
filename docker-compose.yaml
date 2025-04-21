@@ -1,0 +1,42 @@
+version: '3'
+
+services:
+  app:
+    image: golang-crud:latest  # <-- image name with tag
+    # volumes:
+    #   - ./main:/app/main
+    #   - .:/app
+    environment:
+      - REDIS_URL=redis:6379
+      - DATABASE_URL=postgres://user:pass@postgres:5432/database
+      - PORT=8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:latest
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=pass
+      - POSTGRES_DB=database
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  postgres-data:
